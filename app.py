@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import pickle
 import os
+import urllib.request
 
 # Get the absolute directory path of where app.py is running
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -21,35 +22,54 @@ name = st.text_input("Enter your Student Code:", placeholder="e.g., STU12345")
 # Camera input widget
 img_file_buffer = st.camera_input("Take a photo of your face")
 
-# Create a robust, absolute path to the XML file
-cascade_path = os.path.join(BASE_DIR, "haarcascade_frontalface_default.xml")
+# Fallback: Download the XML directly from OpenCV's official source to ensure validity
+@st.cache_resource
+def load_cascade():
+    url = "https://githubusercontent.com"
+    xml_path = os.path.join(BASE_DIR, "haarcascade_frontalface_default.xml")
+    
+    # Download if it doesn't exist or is empty
+    if not os.path.exists(xml_path) or os.path.getsize(xml_path) == 0:
+        try:
+            urllib.request.urlretrieve(url, xml_path)
+        except Exception as e:
+            st.error(f"Failed to fetch face detection files from the internet: {e}")
+            return None
+            
+    detector = cv2.CascadeClassifier(xml_path)
+    if detector.empty():
+        return None
+    return detector
+
+facedetect = load_cascade()
 
 if img_file_buffer is not None and name:
-    # Convert the image buffer to an OpenCV image
-    bytes_data = img_file_buffer.getvalue()
-    cv_image = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-    
-    # Convert to grayscale for face detection
-    gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
-    
-    # Check if cascade file exists before loading
-    if os.path.exists(cascade_path):
-        # Load face cascade safely
-        facedetect = cv2.CascadeClassifier(cascade_path)
+    if facedetect is None:
+        st.error("Face detector configuration error. Please check your internet connection or redeploy the app.")
+    else:
+        # Convert the image buffer to an OpenCV image
+        bytes_data = img_file_buffer.getvalue()
+        cv_image = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
         
-        # Verify the classifier loaded correctly
-        if facedetect.empty():
-            st.error("Error: Could not load the face detection XML structure. Please redeploy.")
+        # Convert to grayscale for face detection
+        gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+        
+        # Detect faces
+        faces = facedetect.detectMultiScale(gray, 1.3, 5)
+        
+        if len(faces) == 0:
+            st.error("No face detected! Please adjust your lighting or angle and try again.")
         else:
-            faces = facedetect.detectMultiScale(gray, 1.3, 5)
+            # Handle shape mismatch safely if multiple faces or structural single faces are returned
+            first_face = faces[0] if isinstance(faces, np.ndarray) and len(faces.shape) > 1 else faces
             
-            if len(faces) == 0:
-                st.error("No face detected! Please adjust your lighting or angle and try again.")
-            else:
-                # Take the first detected face
-                # detectMultiScale returns a list of faces or a single face array depending on match count
-                # Let's handle it safely by pulling the first index
-                (x, y, w, h) = faces[0] if len(faces.shape) > 1 else faces
+            # Extract coordinates safely
+            try:
+                if len(first_face) == 4:
+                    x, y, w, h = first_face
+                else:
+                    x, y, w, h = faces[0][0], faces[0][1], faces[0][2], faces[0][3]
+                    
                 crop_img = cv_image[y:y+h, x:x+w]
                 resized_img = cv2.resize(crop_img, (50, 50))
                 
@@ -82,7 +102,9 @@ if img_file_buffer is not None and name:
                         pickle.dump(updated_faces, f)
                 
                 st.success(f"Success! Face registered for student code: {name}")
-    else:
-        st.error(f"Cascade file missing! Make sure 'haarcascade_frontalface_default.xml' is uploaded to your GitHub repository root folder.")
+            except Exception as e:
+                st.error(f"Error processing face coordinates. Please try standing closer to the camera.")
+                
 elif img_file_buffer is not None and not name:
     st.warning("Please enter your Student Code before taking the photo.")
+
